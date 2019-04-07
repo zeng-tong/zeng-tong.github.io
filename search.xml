@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="utf-8"?>
+<search>
+  <entry>
+    <title><![CDATA[Linux 内存管理]]></title>
+    <url>%2F2018%2F08%2F24%2FLinux-Memory-Manage%2F</url>
+    <content type="text"><![CDATA[内核中分配内存不像在用户态那么容易。内核一般不能睡眠，而且处理内存分配错误对内核来说也并非易事。由于这类因素存在，导致内核中获取内存要比在用户控件复杂很多。本文参考《Linux 内核设计与实现》，大致梳理一下Linux内核的内存管理。简单总结下内存管理的基本单位—页，内存管理方式—按区划分，以及避免内存碎片的机制—slab 层等。 页内核把 物理页 作为内存管理的基本单位，用struct page结构表示系统中的每个 物理页。1234567891011/*定义在 &lt;linux/mm_types.h&gt; */struct page&#123; unsigned long flag; atomic_t _count; atomic_t _mapcount; unsigned long private; struct address_space *mapping; pgoff_t index; struct list_head lru; void* virtual;&#125;; flag用来存储页的状态，包括是不是脏页，是不是被锁定在内存中等等。 _count用来存放引用计数。当引用计数变为-1时说明当前页未被引用，在新的分配中可以使用之。(内核应通过 static int page_count(struct page* page)来检查引用计数) virtual 是页的虚拟地址，通常情况下就是页在虚拟内存中的地址。 必须要理解的是page结构与物理页相关，并非虚拟页。 区由于硬件限制，内核不能对所有页一视同仁。有些页位于内存中特定物理地址上，因而不能将其用于一些特定的任务。由于存在这类限制，所以内核把页划分为不同的区（ZONE）。为解决这些问题： 一些硬件只能用某些特定的内存地址来执行 DMA 一些体系结构的内存的物理寻址范围比虚拟寻址范围大得多。这样就有一些内存不能永久地映射到内核空间。 x86-32上的区区描述物理内存ZONE_DMADMA 使用的页&lt;16MBZONE_NORMAL正常可寻址的页16~896MBZONE_HIGHMEM动态映射的页&gt;896MB Linux 主要使用了四种区： ZONE_DMA，这个区包含的页可用来执行 DMA ZONE_DMA32，与 ZONE_DMA 相似但只能被32位设备访问 ZONE_NORMAL，这个区包含的页能正常映射 ZONE_HIGHMEM，这个区包含『高端内存』，其中的页不能永久地映射到内核地址空间。 区的实际使用和分布与体系结构有关。有的体系结构在任何地址上都能执行 DMA（此时ZONE_DMA 就为空，ZONE_NORMAL 可以直接用于分配）。ZONE_HIGHMEM 也差不多，在所有内存都能被直接映射的体系结构上，ZONE_HIGHMEM 为空。因而一般规则是前两个区各取所需后，剩余的就由 ZONE_NORMAL 独享。 函数接口获得页内核提供了一种请求内存的底层机制，并提供了接口。所有接口都以页为单位。 gfp_t标志- GFP_WAIT 分配器可以睡眠- GFP_HIGH 分配器可以访问紧急事件缓冲池- GFP_IO 分配器可以启动磁盘 I/O- GFP_FS 分配器可以启动文件系统 I/O- GFP_COLD 分配器应该使用高速缓存中将要淘汰的页- GFP_NOWARN 失败时不打印警告- GFP_REPEAT 失败时重复进行分配，这次分配依然存在失败可能- GFP_NOFALL 失败时重复分配，直到成功- GFP_NORETRY 失败时绝不会重新分配- GFP_NO_GROW 由 slab 内部使用- GFP_COMP 添加混合页元数据，在 hugetlb 的代码内部使用1struct page* alloc_pages(gfp_t gfp_mask, unsigned int order)该函数分配 2order 个连续的物理页并返回一个指针，指向第一个页的 struct page。可以通过下面这个函数把给定的页转换成它的逻辑地址。1void* page_address(struct page* page)还有一些接口123unsigned long _get_free_pages(gfp_t gft_mask, unsigned int order)//与 alloc_pages 作用相同，只是它返回的是第一页的逻辑地址。struct page* alloc_page(gfp_t gfp_mask);//申请一页,相当于 order = 0 (2^0 = 1)struct long _get_free_page(gfp_t gfp_mask); 释放页释放页需要谨慎，只能释放属于自己的页。传递了错误的 struct page或地址，用错了 order 值都可能导致系统崩溃。内核是完全信任自己的。123void _free_pages(struct page* page, unsigned int order);void free_pages(unsigned long addr, unsigned int order);void free_page(unsigned long addr); kmalloc()1void* kmalloc(size_t size, gfp_t flags);//获取以字节为单位的一块内核内存 vmalloc()kmalloc()确保页在物理地址上是连续的(虚拟地址当然也是)。vmalloc()只确保页在虚拟地址空间内连续。12void* vmalloc(unsigned long size);void vfree(const void* addr); slab 层为了减小数据频繁申请释放带来的开销，开发人员常会用到空闲链表来做缓存。在需要新的数据块时从链表中取一个，不需要时再放回去而不是释放掉。然而在内核中面临一个问题是不能全局控制。内存变得紧缺时，内核无法通知每个空闲链表收缩空间释放内存。实际上，内核根本不知道存在空闲链表。为了弥补这一缺陷使得代码更加稳固，Linux 内核提供了 slab 层(slab 分配器)来扮演缓存层的角色。 slab 分配器把不同对象划分为高速缓存组，每个缓存组都存放不同类型的对象，每种对象类型对应一个高速缓存。如一个高速缓存用于存放task_strcut ，另一个用于存放struct inode。高速缓存又划分为 slab, slab 由一个或多个物理上连续的页组成。slab 处于三种状态： Empty ，空 Partial, 部分满 Full，满 内核的某一部分需要新对象时，先从部分满的 slab 中分配。若没有部分满的 slab，就从空的 slab 中分配。若没有空的 slab，就要新建一个 slab 了。1234567struct slab&#123; struct list_head list;//满、半满、或空的链表 unsigned long colouroff; void* s_mem; unsigned int inuse; // slab 中分配的对象个数 kmem_bufctl_t free; // 第一个空闲对象&#125;; 参考 《Linux 内核设计与实现》]]></content>
+      <categories>
+        <category>Linux</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+        <tag>slab</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[【转】2008 年北京奥运会到底给我们留下了什么？]]></title>
+    <url>%2F2018%2F08%2F08%2Fdecade-after-Olympic%2F</url>
+    <content type="text"><![CDATA[饶谨和王兴两人同为龙岩人和清华校友，两个人的关系很好。王兴回国办校内网网，第一个服务器还是在饶谨的宿舍里架设的。08年的时候，饶谨创办了“爱国的”四月网，专门搜集西方媒体关于中国的不实报道，为奥运会保驾护航，王兴在运营“带路的”饭否网，一大堆敏感词在饭否上面开通了账号。老罗的牛博网也聚集了很多有趣的人，每一个人都是他的朋友，但是方舟子骂了柴静伪科学，罗永浩便和方舟子结下了梁子。谷歌还可以正常用，奥运会期间，甚至Facebook和Twitter也是可以直接访问的。那一年有A站还没有B站，魔兽世界吧发动圣战爆了东方神起吧。有淘宝没天猫，买书上当当，京东上的笔记本电脑真便宜。没有微信有飞信，大家都是M-Zone人。没有微博有校内，学生和白领起早贪黑偷菜。天涯、豆瓣、猫扑、西祠胡同……那一年百度的股价只有20美元，腾讯股价40多港币，金融危机之后，阿里巴巴跌得只剩4块多港币，但是有游戏业务的搜狐和网易反而逆势高涨。盛大也还在第一梯队，腾讯抄完了跑跑卡丁车抄劲舞团，还是王小波外甥姚勇帮忙抄的，雷军从金山辞职去做天使投资人，傅盛被周鸿祎赶出360。微软发布了Windows 7，乔布斯从信封里面抽出来的Macbook Air震惊了世界，但是iPhone还很小众，在中国即将大卖的是诺基亚的高低搭配N97和5800。那一年汶川地震、南方雪灾。中国人在灾难面前表现得不错，那时候很多人竟然乐观地说，“08年是中国公民社会元年”。那一年四万亿还没有落地，一个熟练的程序员一个月工资在北京可以买一平米的房子。那一年，奥运会盛大的开幕式，每个人都很骄傲。志愿者们都是刚考上大学的学生，踌躇满志，觉得这盛世如自己所愿，哪里分什么赵家李家都只有种花家。然而又到了一届奥运会开幕的时候，回过头再去看恍若隔世，这个互联网还有参与建设互联网的我们已经走出去了这么远，但是最好看的开幕式好像还是08年。昨天和今天，很多人跑到B站上看08年奥运会开幕式，听《歌唱祖国》，看2008人击缶，看飞天，看姚明、李娜、刘翔、孙杨都在的中国代表团入场，在弹幕里说自己感动得落泪，骄傲得不行。昨天我们老道消息写文章，对实习生说，让你骄傲的不是Uber，是青春。今天也可以说，让你骄傲的其实不是北京奥运会，是你的青春。那时候我们真的是睁开眼看世界的时候，一届奥运会，一根网线，什么都新鲜得不行。在那之后，网民数量从不到3亿增长到8亿，移动互联网从无到有，从事互联网行业的人数可能加了一个零。但是08年之后，有的人觉得世界在上升，有的人觉得世界在下沉，我们的共同记忆越来越少。对同一个事物的看法竟然逐渐拉大了起来。有投资人曾经说，90后，特别是95后，不再拥有共同记忆，所以亚文化才变成一门很重要的生意。一直到今年，每一个公众号都变成了一门生意，从一个评论区来到另一个评论区，你不知道是自己还是他们来自遥远外星。事情就是这样，分道扬镳是从北京奥运会之后开始的。 转载自知乎 :2008 年北京奥运会到底给我们留下了什么？ - 老编辑的回答 - 知乎 https://www.zhihu.com/question/33721073/answer/115407744]]></content>
+      <categories>
+        <category>live</category>
+      </categories>
+  </entry>
+  <entry>
+    <title><![CDATA[利用打桩机制定位内存泄漏]]></title>
+    <url>%2F2018%2F08%2F08%2FtraceMemoryLeak%2F</url>
+    <content type="text"><![CDATA[Linux 连接器支持一个很强大的技术，称为 库打桩(library interpositioning)，它允许你截获对共享库函数的调用，取而代之执行自己的代码。使用打桩机制，你可以追踪对某个特殊库函数的调用次数，验证或追踪它的输入输出值，或者甚至把它替换成一个完全不同的实现。以下使用打桩机制来检测 C 程序是否存在内存泄漏。 编写包装函数打印 malloc 调用—malloc.h—1234#define malloc(size) Malloc(size)#define free(ptr) Free(ptr)void *Malloc(size_t size);void Free(void* ptr); —Malloc.c—12345678910111213#ifdef TRACEHEAP#include&lt;stdio.h&gt;#include&lt;stdlib.h&gt;void* Malloc(size_t size) &#123; void* ptr = malloc(size); printf("Malloc(%d)=%p\n", (int)size, ptr); return ptr;&#125;void Free(void* ptr) &#123; free(ptr); printf("free(%p)\n", ptr);&#125;#endif 编译时打桩—int.c—1234567#include&lt;stdio.h&gt;#include&lt;malloc.h&gt;int main() &#123; int* p = (int*) malloc(32); free(p); return 0;&#125; 12➜ gcc -DTRACEHEAP -c Malloc.c➜ gcc -I. -o intc int.c Malloc.o 运行程序会得到如下追踪信息：123➜ ./intcMalloc(32) = 0x7f9fef402700Free(0x7f9fef402700) 由于有 -I. 参数，所以会进行打桩。它告诉C预处理器在搜索通常的系统目录之前，先在当前目录中查找malloc.h。 监测内存泄漏的思路监测内存泄漏的关键是要能截获住对分配内存和释放内存的调用。截获住两个函数，我们就能跟踪每一块内存的生命周期。比如每成功分配一块内存后，把它的指针加入一个全局的 list；每当释放一块内存，再把它的指针从list中删除。当程序结束时，list中剩余的指针就是指向那些没有被释放的内存。通过上述的打桩机制，我们可以实现内存泄漏的监测。 参考：- 《深入理解计算机系统》]]></content>
+      <categories>
+        <category>Operating System</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+        <tag>Memory leak</tag>
+        <tag>Library interpositioning</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[排查线上程序出现了CPU或内存高占用的原因]]></title>
+    <url>%2F2018%2F07%2F19%2Ftrack-process-status%2F</url>
+    <content type="text"><![CDATA[Linux 下可以通过 top 命令查看系统的健康状态，按下「1」来打开 CPU 列表，然后「shift + p」 以CPU 排序。查到 cpu 占用高的进程的 pid，然后看 CPU 主要消耗在用户态(us)还是内核态(sy)。用户态的函数跟踪用 ltrace , 内核态的函数跟踪用 strace 命令。以内核态为例：12sudo strace -p [pid] # 跟踪进程号为 pid 的进程的系统调用sudo strace -cp [pid] # 上一个命令敲下来，可能跑了满屏的数据不便观察。-c选项汇总各个操作占用的时间]]></content>
+      <categories>
+        <category>Operating System</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+        <tag>strace</tag>
+        <tag>top</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[孤儿进程造成的进退维谷]]></title>
+    <url>%2F2018%2F07%2F12%2Forphan-process-dilemma%2F</url>
+    <content type="text"><![CDATA[如果父进程在子进程之前退出，必须有机制来保证子进程能找到一个新的父亲，否则这些成为孤儿的进程在退出时将永远处于僵死状态，白白耗费内存。对于这个问题解决方法是给子进程在当前线程内找一个线程作为父亲，如果不行，就让init做它们的父亲。在do_exit() 中会调用exit_notify()，该函数会调用forget_original_parent()，而后调用 find_new_reaper()来执行寻父过程。 p.s. 在每个task_struct中都有一个parent指针，指向父进程task_struct。还有包含一个children的子进程链表。进程退出时，大部分清理工作都通过do_exit()(定义在/kernel/exit.c)来完成。 find_new_reaper中找到合适的养父进程后，只需要遍历children链表并为链表中每一个task_struct设置新的父进程(parent指针)即可。123456789reaper = find_new_reaper(father);list_for_each_entry_safe(p, n, &amp;father-&gt;children, sibling) &#123; p-&gt;real_parent = reaper; if (p-&gt;parent == father) &#123; BUG_ON(p-&gt;ptrace); p-&gt;parent = p-&gt;real_parent; &#125; reparent_thread(p, father);&#125;]]></content>
+      <categories>
+        <category>Operating System</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[__stdcall __cdecl 和 __thiscall的区别？]]></title>
+    <url>%2F2018%2F06%2F27%2Fthe%20difference%20bewteen%20various%20function%20call%2F</url>
+    <content type="text"><![CDATA[高级语言被编译成机器代码时，有一个问题必须解决： CPU 没有办法知道一个函数需要调用多少个参数，即计算机不知道怎么给函数传参。传参工作必须由函数调用或者函数本身来协调。为此，计算机提供一种被称为栈的数据结构来支持参数传递。需考虑 当参数多于一个时，按照什么顺序入栈。 函数调用后，由谁来恢复栈。函数返回值放什么地方。 常用的调用规范有: stdcall , cdecl, thiscall __stdcall: 参数由右向左顺序入栈 函数自身修改堆栈 函数名自动加下划线，后面紧跟@+参数大小(如: int func(int a, int b) =&gt; _func@8 __cdecl:C语言函数的缺省调用约定 参数由右向左顺序入栈 调用者修改堆栈，因此 C语言支持不固定个数的参数。 函数名前自动加下划线 __thiscall:唯一一个不能指明的函数修饰，C++ 类成员函数的缺省调用约定 参数由右向左入栈 若参数个数确定，则 this 指针通过 ecx 传给被调用者，否则 this 在所有参数压入栈后压栈。 参数确定时，函数自己清理堆栈。否则调用者清理堆栈。]]></content>
+      <categories>
+        <category>C/C++</category>
+      </categories>
+      <tags>
+        <tag>__thiscall</tag>
+        <tag>__stdcall</tag>
+        <tag>__cdecl</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Longest Common Prefix]]></title>
+    <url>%2F2018%2F06%2F24%2FLongest-Common-Prefix%2F</url>
+    <content type="text"><![CDATA[昨天接到深信服的电话面试。其中一道很简单的算法题因一时愚蠢没有给出能力范围内的最优解。记录一下，希望以后面试过程中能把每个问题不忙不赶地给出能力范围内的最优答案。 题目描述： 编写一个函数来查找字符串数组中的最长公共前缀。 拿到这个题首先应该想到，既然求最长公共前缀，那么这个前缀必然不能大于数组中最短的字符串。因此可先求出最短字符串长，再将长度作为下界来遍历数组中的字符串：如{“ABC”, “ABUFJK”, “ABCOKL”} 一旦遇到同一位置上的字符不相同，就结束比较返回结果。时间复杂度为O(m*n), m 为最长前缀长度。最坏情况下，所有字符串都相等 m 等于字符串长度。 代码如下： 123456789101112131415161718192021class Solution &#123;public: string longestCommonPrefix(vector&lt;string&gt;&amp; strs) &#123; if (strs.empty()) return ""; int size = min_element(strs.begin(), strs.end(), [](const string str1,const string str2)&#123; return str1.size() &lt; str2.size(); &#125;)-&gt;size(); string res = ""; for (int i = 0; i &lt; size; ++i) &#123; char current = strs[0][i]; for(int j = 0; j &lt; strs.size(); j++) &#123; char t = strs[j][i]; if (current != t) return res; &#125; res.push_back(current); &#125; return res; &#125;&#125;; 经 @hyss 指正, 该题不必提前求出最短字符串长。只需依次遍历，不满足条件时结束即可。此法仅需在逻辑中加上是否到达某字符串结尾的判断。]]></content>
+      <categories>
+        <category>DataStructure and Algorithm</category>
+      </categories>
+      <tags>
+        <tag>Longest Common Prefix</tag>
+        <tag>最长公共前缀</tag>
+        <tag>LeetCode</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[sed and awk]]></title>
+    <url>%2F2018%2F06%2F20%2Fsed-and-awk%2F</url>
+    <content type="text"><![CDATA[今天花了一下午的时间把 sed，awk 的基础用法看了一下。还没工作，现在暂时用的不多，因此写个笔记整理一下，以便之后快速回忆。 要理解 sed 和 awk 的用法，有座大山必须要先搬走，那就是「正则表达式」。正则表达式用于文本匹配，对于 sed 、 awk 来说就是要把想处理的目标文本，从茫茫的字海中提取出来。 正则表达式正则表达式若不经常用那真是屡看屡忘，百试不爽。那么正则表达式应该如何正确记忆呢？-分层 类似算法中的分治思想，记忆正则表达时也可遵循此法。遇到一个大问题时我们可先将问题进行拆分，当将每一小问题都妥善解决时，大问题便也解决了。正则表达的拆分可以这样看：|表达式 ||:-:||字符串表示||单个字符表示| 单个字符表示 特定字符表示，就是具体的某一个字符。直接输入该字符就可以。 范围内字符，[] &lt;-放在中括号内的字符。如[0-9]表示范围0~9中的一个字符，记住范围内字符是表示其中的一个字符。此外中括号还可放入其他范围如: [a-z]表示所有小写字母 [A-Z]表示所有大写字母 [a-zA-Z]表示所有字母 [a-zA-Z0-9_] 表示字类字符，与\w等价。(字类字符可以理解为能给变量命名的字符 [^a-z]表示除小写字母外的所有字符 任意字符 . 点表示任意一个字符 其他符号 ^ 在中括号内表示取反，在中括号外表示单词的开头。 元字符：\w 表示字类字符，\W 表示非字类字符，\b 分隔符 字符串表示单个字符拼凑起来便是字符串，如要查找 /etc/passwd 文件中以 t 开头 g 结尾的记录： 1grep &apos;t.*g&apos; /etc/passwd 注意正则表达式是贪婪匹配，即是它会在一行中找到尽量长的匹配结果。因此在写正则表达式的时候，可能需要我们多加注意。大多时候得到理想的匹配结果，都是经过我们多次修改表达式，来一步一步实现的结果。因此需要耐心细致，思考周全。 表达式即字符串的组合 * 表示出现0次或多次， + 表示出现1次或多次， ？表示出现0次或1次 {n,m} 重复特定次数，n~m 次 案例一，匹配5~10位的 QQ 号（注意{}需要加转义字符）：1grep &apos;[0-9]\&#123;5,10\&#125;&apos; qq.txt 案例二，匹配15位或18位身份证号，支持带 x （身份证号第一位不为0，() 需要加转移字符，| 逻辑或需要加转义字符）：1grep &apos;^[1-9]\([0-9]\&#123;13\&#125; \| [0-9]&#123;16&#125;\)[0-9xX]$&apos; sedMAC 系统上是 BSD 版本的 sed ，和 GNU 的某些操作不一样！！！下文是记录的 GNU 系统下的 sed 命令，若在 MAC 上先装 GNU-SED1brew install gnu-sed --with-default-names sed 是流处理编辑器，从文本或管道读取数据到模式空间(临时缓冲区)中，通过 sed 命令处理然后输出。sed 每次只处理一行数据。 sed 处理： 如何进行文本处理的 常用命令 高级操作命令 如何进行文本处理呢？1.正则选定文本 -&gt; 2. sed进行处理 命令行模式：1sed [option] &apos;command&apos; files options: -e, -n(quiet) command: 行定位(正则) + sed 命令 行定位： 定位1行: x, /patterm/ 定位多行x,y 不选某行 x! 定位间隔 first~step a新增行，c 替代行，d 删除行，s 替换(分割符/ 、#)，g 全局标志 打印第十行1sed -n &apos;10p&apos; /etc/passwd 打印第10~20行1sed -n &apos;10,20p&apos; /etc/passwd 打印日志中 Error 的行, //是正则表达式部分1sed -n &apos;/Error/p&apos; log.txt 打印主机网络接口的 ip 地址12345678910先查看接口信息en0: flags=8863&lt;UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST&gt; mtu 1500 ether 8c:85:90:cb:10:70 inet6 fe80::801:55c8:cc5e:acc6%en0 prefixlen 64 secured scopeid 0x6 inet 172.17.131.14 netmask 0xfffff000 broadcast 172.17.143.255 nd6 options=201&lt;PERFORMNUD,DAD&gt; media: autoselect status: active----------------------------ifconfig en0 | sed -n &apos;/inet /p&apos; | sed &apos;s/inet \([0-9.]\+\).*/\1/&apos; 高级操作命令 {} 多个 sed 命令，用；分开 &amp; 替换固定字符案例，小写转大写 1sed &apos;s/\(\w\+\):.*/\1/&apos; passwd | sed &apos;s/.*/\U&amp;/&apos; -r 复制指定文件到匹配行 (插入) 1sed &apos;1r abc.txt&apos; 123.txt # abc.txt文件拷贝到目标文件第一行之后 -w 复制匹配行拷贝到指定文件里 （改写源文件） -q 退出 awk可编程，处理灵活。方便统计文本，制表。 awk 的行处理方式与格式 awk 内嵌参数应用 awk 内嵌程序代码应用 awk 处理方式 一次处理一行 awk 可对每行切片处理 命令行格式：1awk [options] &apos;command&apos; files 基本格式 + 扩展格式 ： pattern {awk 操作命令} 内置参数 内置变量， $0 表示当前行，$1表示第一个字段，$2表示第二个字段以此类推 分隔符， -F : ‘分隔符’ NR： 每行记录号 NF：字段数数量变量 FILENAME：正在处理文件的文件名案例1，打印行号，列数，用户名1awk -F &apos;:&apos; &apos;&#123;print NR, NF, $1&#125;&apos; /etc/passwd or1awk -F &apos;:&apos; &apos;&#123;printf(&quot;%s, %s, %s\n&quot;, NR, NF, $1)&#125;&apos; /etc/passwd 案例2，显示/etc/passwd 中用户 id 大于100的行号和用户名1awk -F &apos;:&apos; &apos;&#123;if ($3 &gt; 100) print $3, $1&#125;&apos; /etc/passwd 内嵌程序应用逻辑判断式: pattern {awk 命令} pattern 表示为： 正则表达式；逻辑表达式 ~表示匹配正则表达式，!~表示不匹配正则表达式 ==, != , &lt; , &gt; 常见的判断逻辑 案例1，打印出日志文件中为 Error 行的时间戳1sed &apos;/Error/p&apos; log | awk &apos;&#123;print $1&#125;&apos; or1awk &apos;/Error/&#123;print $1&#125;&apos; log 案例2，统计主机处于连接状态和监听状态的描述符数量1netstat -anp | awk &apos;$6~/CONNECTED|LISTEN/&#123;sum[$6]++&#125;END&#123;for(i in sum) print i, sum[i]&#125;&apos;]]></content>
+      <categories>
+        <category>Linux</category>
+      </categories>
+      <tags>
+        <tag>sed</tag>
+        <tag>awk</tag>
+        <tag>regex</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[vmstat 命令]]></title>
+    <url>%2F2018%2F06%2F16%2Fvmstat-%E5%91%BD%E4%BB%A4%2F</url>
+    <content type="text"><![CDATA[vmstat (virtual memory statistics), 它能实时输出系统的各种资源的使用情况。比如进程信息、内存使用、CPU 使用率以及 I/O 使用情况。vmstat 命令常用的选项和参数包括： -f, 显示自系统启动以来执行的fork 次数 -s, 显示内存相关的统计信息以及多种系统活动的数量(比如 CPU上下文切换次数) -d, 显示磁盘相关统计信息 -p, 显示指定磁盘分区的统计信息 -S, 使用指定的单位来显示。参数k, K, m, M 分别代表1000, 1024, 1 000 000 和 1 048 576字节 delay, 采样间隔(单位是s), 每隔 delay 时间输出一次统计信息 count, 采样次数，即共输出count 次统计信息]]></content>
+      <categories>
+        <category>Linux</category>
+      </categories>
+      <tags>
+        <tag>vmstat</tag>
+        <tag>command</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[散列算法]]></title>
+    <url>%2F2018%2F05%2F18%2F%E6%95%A3%E5%88%97%E7%AE%97%E6%B3%95%2F</url>
+    <content type="text"><![CDATA[散列算法从两个方面来看，一是散列函数的构造，二是冲突的解决方法。散列函数的优劣主要参考因素是装填因子； 散列函数的构造 除整留余法， 此方法的核心是找到一个素数作为数组的长度，并且构造的算法为hash(key) = key % M( M 是素数) 优点：简单，易于构造。 不足：1.）hash(0) 恒等于0，具有不变的项。显然违背了 hash 的要义，随机性不好。2.） 此外，用取余的方法键之间的存在线性的联系，也没有一个好的随机性。 MAD，hash(key) = (a*key + b) % M 数字分析法，此方法抽取 key 中的某几位来作为地址。优势也是简单。但缺点是只取几位作为参考，与其他未被取到的值没有产生联系。 折叠法，将数字分成几组，并把每组相加的和作为地址。 伪随机法，该方法确实方便快捷而且也满足随机性。但问题在于伪随机数的生成方法存在移植性问题。因此使用时也需谨慎。 冲突的解决 (分为两类封闭地址法 (核心思想是计算出的 key 与地址一定关联的。 多槽位法，即一个key 对应一个槽，槽内可放多个元素。此方法的缺点是无法事先求知合适的槽位大小。预留大了浪费空间，预留小了会发生致命冲突。 独立链，受到多槽位法的启发，我们可以 key 的对应的地址事先就存储链表，如此便可解决多槽位法的问题。但是。。。因为存储的是链表，链表的元素是在堆上分配的不连续，因此高速缓存便失效了。也就是说，当遇到多次 I/O 的时候效率的损失可能是巨大的。 开放地址法 (核心思想是计算出的 key 和地址允许不完全匹配。 线性试探法，即根据计算出的 key 找到地址，若这个地址已经被占用，那线性的往下走，直到找到空的位置。此举算法简单，而且也能有效利用高速缓存。但还是存在一个问题：可能导致冲突的次数剧增。 平方试探法，受到线性试探法的启示，当 key 对应的地址已经被占用时，我们把向前的试探的步进增大至 key2。此举可快速逃离冲突的区域，不失为一种优秀的冲突解决方法。不过，这种方法还存在一种弊端，有没有可能试探的所有地址都有值存在而未试探的地方其实存在空地呢？很不幸，答案是确实存在。那么我们又该如何解决呢？数学证明出来，只要装填因子小于 50% ，那么这个问题就可以得到解决(数学真伟大)]]></content>
+      <categories>
+        <category>DataStructure and Algorithm</category>
+      </categories>
+      <tags>
+        <tag>hash</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[死锁]]></title>
+    <url>%2F2018%2F05%2F18%2F%E6%AD%BB%E9%94%81%2F</url>
+    <content type="text"><![CDATA[要说死锁，先明确一个「资源」的概念。进程对设备，文件等取得独占性访问，这种排他性的对象我们称作资源。资源又分为可剥夺和不可剥夺的。可剥夺的资源不会产生死锁。 死锁有4个条件，任一一个打破即可解除死锁。1. 互斥条件，一个资源每次只能被一个进程使用。 2. 请求与保持条件: 一个进程因请求资源而阻塞时，对已获得的资源保持不放。 3. 不剥夺条件: 进程已获得的资源，在未使用完之前，不能强行剥夺。 4. 循环等待条件: 若干进程之间形成一种头尾相接的循环等待资源关系。 处理死锁有四种策略：1. 忽略该问题 2. 检测死锁并恢复 3. 仔细地对资源进行动态分配，以避免死锁。 4. 通过破除所述的四个条件中的任意一个条件，用以防止死锁产生。 死锁的检测: 单资源类型的检测，判断资源分配有向图是否存在环，存在即可能死锁。 多资源类型的检测， 使用资源矩阵分别记录资源总数，可用资源数以及进程申请资源数，然后检测是否有进程满足申请数少于可用数存在则该进程可正常获取资源，并最终释放已占用的资源(即是若找到进程满足，则可用资源数矩阵值应加上该进程的占用值。)如果遍历完了矩阵，没有找到符合条件的，则表示会发生死锁，结束算法。 死锁的恢复： 剥夺法恢复， 回退法恢复，进行恢复时进程回滚到较早的检查点，该检查点之后的所有的工作都将丢失。 杀死进程恢复， 死锁的避免(银行家算法 单资源的银行家算法，银行家算法对每一个请求进行检查，检查如果满足它是否会引起不安全状态。若是则不满足该请求，否的话便满足。检查状态是否安全的方法是看他能否有足够的资源去满足一个距最大需求最近的客户。若可以满足，那么这笔投资被认为是可收回的。然后接着检查下一个距最大需求最近的客户能否满足，如此往复直到所有投资都能被收回那么这个状态是安全的，最初的请求便可批准。 多资源的银行家算法 实际上，银行家算法缺乏实用价值。因为很少有进程能够在运行前就知道其所需资源的最大值，而且进程数也是不固定的。因此在实际中，如果有也是极少的系统使用银行家算法来避免死锁。 两阶段加锁在第一阶段进程对所有所需要的记录进行加锁，一次锁一个记录。如果第一阶段加锁成功，就进行第二阶段，更新加锁的记录然后释放锁。在第一阶段并没有做实际的工作。如果在第一阶段，某一个待加锁的记录已经被锁，那么所有已被此进程加锁的记录的锁都必须被释放，然后重新开始第一个阶段。如果没有释放就重新加锁，可能产生死锁。 非资源死锁在此之前都是讲的资源死锁，而死锁还存在另外一种非资源的死锁。例如当两个进程都在等待对方的某种操作。如 TCP 中滑动窗口可能出现死锁，server 方的窗口值不再为1，且发送的这个包在网络中丢失了。client 并不知道 server 的窗口值大于1，可以发包了。server 等待 client 发包，client 等待 server 的窗口值增大，导致死锁。此外使用信号量的时候，也时常产生死锁。 饥饿一些进程永远也得不到服务的情况。可以通过先来先服务的资源分配策略来避免。 设系统中有 m 个同类资源数，n 为系统中的并发进程数，当 n 个进程共享 m 个互斥资源时，每个进程的最大需求数是 w，当 m &gt; n*(w-1)时不会发生死锁。]]></content>
+      <categories>
+        <category>Operating System</category>
+      </categories>
+      <tags>
+        <tag>Deadlock</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[缺少 WUNTRACED 参数引发的惨案]]></title>
+    <url>%2F2018%2F04%2F25%2F%E7%BC%BA%E5%B0%91-WUNTRACED-%E5%8F%82%E6%95%B0%E5%BC%95%E5%8F%91%E7%9A%84%E6%83%A8%E6%A1%88%2F</url>
+    <content type="text"><![CDATA[在写简易 shell 程序的时候，因 waitpid 函数的使用不当导致程序出现了预料之外的行为。求助了各路高手，找了一天，最后终于定位到了源头，原来是很细小的问题导致。 问题描述上代码 mystop.c ,没兴趣看可以先跳过，描述在下面。1234567891011121314151617181920212223242526272829303132333435/* * mystop.c - Another handy routine for testing tiny shell * * usage: mystop &lt;n&gt; * Sleeps for &lt;n&gt; seconds and sends SIGTSTP to itself. * */#include &lt;stdio.h&gt;#include &lt;unistd.h&gt;#include &lt;stdlib.h&gt;#include &lt;sys/types.h&gt;#include &lt;sys/wait.h&gt;#include &lt;signal.h&gt;extern int errno;int main(int argc, char **argv)&#123; int i, secs; pid_t pid; if (argc != 2) &#123; fprintf(stderr, "Usage: %s &lt;n&gt;\n", argv[0]); exit(0); &#125; secs = atoi(argv[1]); for (i=0; i &lt; secs; i++) sleep(1); pid = getpid(); if (kill(-pid, SIGTSTP) &lt; 0) fprintf(stderr, "kill (tstp) error"); exit(0);&#125; 在自制简易 shell 中调用 mystop 程序时，在 kill处阻塞了,没有正常返回到主进程。但是！！如果通过Ctrl + Z，键盘上触发SIGTSTP 信号，mystop 可以正常返回。这很使我迷惑。what f** ?? 问题分析 父进程(tsh)设置了sigchld_handler, sigtstp_handler, sigint_handler等几个信号处理函数。 在子进程停止或终止时会给父进程(tsh)发送SIGCHLD 信号，父进程将其捕获并 调用sigchld_handler及时清理掉僵死进程。sigtstp_handler 捕获SIGTSTP信号，将其转发给子进程。sigint_handler 同sigint_handler，将SIGINT 捕获并转发给子进程。 子进程调用 execv() 之前，通过setpgid() 设置了新进程组。且调用execv 之后信号处理函数会恢复默认处理。因此此前给父进程设置的sig_handler不会影响子进程。 键盘触发Ctrl + Z，信号可能是被父进程捕获转发给子进程；而子进程一定是自己内部调用kill(-pid, SIGTSTP) Mystop 调用 kill(-pid, SIGTSTP)时，因与父进程不在一个进程组因此父进程不会收到SIGTSTP,不会触发sigtstp_handler。 Mystop 进程调用kill 时，父进程sigchld_handler能捕获收到SIGCHLD 信号。能捕获到 SIGCHLD，可以说明 Mystop 正常终止了，但为什么还阻塞在那儿了呢？越发迷惑 emmm… 尝试测试了一会，也看了书，Google了一下没人遇到这样的奇葩问题。焦灼中man 了一下 waitpid If the WUNTRACED option is set, children of the current process that are stopped due to a SIGTTIN, SIGTTOU, SIGTSTP, or SIGSTOP signal also have their status reported. 之前看书不够细心，没有注意太多 terminated 和 stopped 。误以为 waitpid 只会在有 terminated 状态时返回 terminated process 的 pid。看到 manual page 中，提到了 「stopped」。于是立马燃起了希望，加上 | WUNTRACED。果然解决问题 Finally其实在 mystop 调用 kill(-pid, SIGTSTP)后，子进程立即变为stop 状态了。但waitpid 没加WUNTRACED 参数不能返回其 pid，因此没有正确将job的 state 更新。而父进程调用waitfg ，一直在等待 ForeGround进程改变状态。所以出现的效果就是之前看到的那样，好像是mystop 阻塞了。然而事实是 mystop 没有阻塞，已经是stop 状态了，阻塞在了 waitfg，主进程。 总结 exec函数将原先设置为要捕捉的信号都更改为默认动作，其他信号的状态则不变（一个进程原先要捕捉的信号，当其执行一个新程序后，就不能再捕捉了，因为信号捕捉函数的地址很可能在所执行的新程序文件中已无意义）。 When a child process terminates or stops, the kernel sends a SIGCHLD signal (number 17) to the parent. (Yes, stop will do too!) WUNTRACED: Suspend execution of the calling process until a process in the wait set becomes either terminated or stopped. Return the PID of the terminated or stopped child that caused the return. The default behavior returns only for terminated children. This option is useful when you want to check for both terminated and stopped children. 纸上得来终觉浅，绝知此事要宫刑躬行。 体会到很多前辈说的那句话：学计算机的，看了书不能说明你掌握了。只有实践过后才能算基本掌握。(我加一句，学计算机的，不能完全相信自己的眼睛 (mystop: 我就说你冤枉我了 &gt;_&lt; )]]></content>
+      <categories>
+        <category>Linux</category>
+      </categories>
+      <tags>
+        <tag>Signal</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[安利 caddy]]></title>
+    <url>%2F2018%2F03%2F05%2F%E5%AE%89%E5%88%A9-caddy%2F</url>
+    <content type="text"><![CDATA[caddy 是一个 Go 语言实现的轻量级 web server. 因其配置简单所以用来本地联调前后端分离的项目特别方便.此处安利两个功能 前后端联调 和 全站自动升级 HTTPSCaddy 官网 Mac OS &amp;&amp; Linux 安装:在官网选择需要的插件, 然后 copy installer script 执行。以 64bit Linux 为例:执行：1curl https://getcaddy.com | bash -s personal 若 ubuntu 默认无 curl, 先执行 apt-get install curl 安装 curl. 配置文件以前后端联调为例: 新建配置文件 caddyFile . 123https://front-end.com &#123; proxy /api https://back-end.com:10010 # 将前端 https://front-end.com/api 请求代理到 https://back-end.com:1000&#125; 执行配置文件. 1sudo caddy --conf caddyFile 此外 caddy 做反向代理服务器时，会自动申请Let’s Encrypt的HTTPS证书. 大赞 Caddy !! 无需麻烦的申请配置 有木有很爽!!!如:123sslocal.cn &#123; # 自动申请Let's Encrypt的HTTPS证书 proxy / 127.0.0.1:10086&#125; caddy 更多强大的功能, 目前还没有用到。这两个常用的，可以说很爽啊！ 有机会再研究 Go !]]></content>
+      <categories>
+        <category>Server</category>
+      </categories>
+      <tags>
+        <tag>caddy</tag>
+        <tag>proxy</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[实习的最后一天]]></title>
+    <url>%2F2018%2F02%2F02%2F%E5%AE%9E%E4%B9%A0%E7%9A%84%E6%9C%80%E5%90%8E%E4%B8%80%E5%A4%A9%2F</url>
+    <content type="text"><![CDATA[今天应该是这个冬天以来最早到公司的一天，办完离职手续今天也就离职了。这个冬天太慵懒了，每天睡到9点才慢条斯理起床来公司。跟印象中早起晚睡加班熬夜的程序猿好像不太一样？大概得得益于遇到一个好的老大吧。昨晚跟老大一起吃饭，还在感慨一晃在公司就呆了将近半年。真的很快。要离职了，忽然感觉很迷茫。不知道应该回去准备考研，还是备战春招，秋招…互联网行业的变化真是太快了，前几年移动端还异常火爆，大军涌入，这才过一两年就冷了下来。大有 JavaScript 一统 web, 移动端，PC 端的势头，因而前端又热得发烫。如果就此准备秋招，本科毕业进军相对稳定的后端开发，谁又说得准这块不会很快就被 AI 取代了呢？ 实在纠结。对行业的迷茫，对前路的迷茫。可又能怎么办呢？离职后，先回家过个春节再看吧。路有很多，现在还能进行选择。真正应当焦虑的，或许是自己没有选择余地的时候吧~]]></content>
+      <categories>
+        <category>随笔</category>
+      </categories>
+      <tags>
+        <tag>生活</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[计算机专业本科就业和硕士就业的成本比较]]></title>
+    <url>%2F2018%2F02%2F01%2F%E8%AE%A1%E7%AE%97%E6%9C%BA%E4%B8%93%E4%B8%9A%E6%9C%AC%E7%A7%91%E5%B0%B1%E4%B8%9A%E5%92%8C%E7%A1%95%E5%A3%AB%E5%B0%B1%E4%B8%9A%E7%9A%84%E6%88%90%E6%9C%AC%E6%AF%94%E8%BE%83%2F</url>
+    <content type="text"><![CDATA[基础设定: 仅以薪资作为计算对象, 默认硕士读三年, 不考虑读研期间的学杂费, 生活花销.设 本科毕业即就业的底薪为 x , 提薪速度为 y, 收益 totalMoney. 硕士毕业就业底薪为 m , 提薪速度为 n, 收益 totalMoney. t 为本科毕业的工作时间, 以年为单位.公式(即等比数列求和): 本科生: 硕士: 化简得到代码中的公式.12345678910111213141516171819202122232425262728293031323334353637#include &lt;iostream&gt;#include &lt;cmath&gt;class SunkCost &#123;public: double yearCost(double undergraduate, double times, double base_salary_times) &#123; int year = 3; double master = times * undergraduate; double left = undergraduate - undergraduate * pow(1 + master, year - 3); double right = master - master * pow(1 + undergraduate, year); while (left &gt;= right) &#123; ++year; left = base_salary_times * undergraduate - base_salary_times * undergraduate * pow(1 + master, year - 3); right = master - master * pow(1 + undergraduate, year); &#125; return year; &#125; void printYearCost(double undergraduate, double raise_rate_times, double base_salary_times) &#123; std::cout &lt;&lt; "硕士起薪倍数: " &lt;&lt; base_salary_times &lt;&lt; std::endl; std::cout &lt;&lt; "本科生提薪速度: " &lt;&lt; undergraduate &lt;&lt; std::endl; std::cout &lt;&lt; "硕士研究生提薪速度: " &lt;&lt; undergraduate * raise_rate_times &lt;&lt; std::endl; std::cout &lt;&lt; "硕士追上本科就业需花: " &lt;&lt; yearCost(undergraduate, raise_rate_times, base_salary_times) &lt;&lt; std::endl; &#125;&#125;;int main() &#123; SunkCost sunkCost; sunkCost.printYearCost(0.2, 1.5, 2); return 0;&#125; 运行结果: 硕士起薪倍数: 2 本科生提薪速度: 0.2 硕士研究生提薪速度: 0.3 硕士追上本科就业需花: 8 限于本渣知识面的狭窄，可能很多因素没有考虑在内。 但我认为如果计算方法没错的话，也可当个参考。以40年的职业规划来说，硕士应该是稳赚不赔的。有什么问题，过路大神多指教。]]></content>
+      <categories>
+        <category>随笔</category>
+      </categories>
+      <tags>
+        <tag>计算机就业</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Fuck 404]]></title>
+    <url>%2F2018%2F01%2F26%2FFuck-404%2F</url>
+    <content type="text"><![CDATA[在一篇介绍 HTTP 监控框架的推文中, 作者针对监控框架常见玩法的弊端进行了分析, 提出了相应结合业务特性的解决方案. 在实际的应用中效果如何, 鄙人这般弱鸡暂时还没有接触过, 因此暂时不讨论这个问题.其文中提到「 HTTP 状态码监控的弊端」使我产生了一番兴趣. 为了不产生阅读障碍, 我将文章部分摘抄在下面. 原文地址: 100行代码，搞定http监控框架 __提问__: 常见的 HTTP 非 200 状态码, 以及响应时间监控有什么弊端 ?&lt;br&gt; __回答__: 每个公司都有自己的 404 页面，例如 58到家 的404页面大概长这样: 这个页面的 HTTP 状态码是 200. 且返回速度极快, 根本不能代表 HTML 页面的真实运行情况, 很难起到真正的监控作用. _画外音: 不是说http状态码监控没用，相反，http状态码的监控是很有必要的，http状态码404说明系统一定有问题，但http状态码200不能说明系统没有问题。_ 上面这段话应该阐述的比较清楚了。当用户请求了一个服务器端不存在的资源时，正常情况下服务器会抛异常，返回状态码为 404. 但近乎所有的网站为了优化用户的体验都不会选择直接返回那串异常信息，而会定制一个 error.html。以你能读懂的方式告诉你：你要的东西，我这里没有！想到我的同窗苍老师(是同窗没错!) 在学 Web 相关的东西，因此打算跟他一起讨论一下这个问题。 addpass : @苍老师， HTTP 状态码404说明系统一定有问题，但 200 不能说明系统没有问题。为什么？5分钟后….苍老师: 200是系统成功处理了请求, 你说不能说明系统没得问题. 可能还有其他问题？ addpass: 不对不对… (画外音: 说不能是什么鬼..好吧) addpass: 等等等等, 我说错了, 不是不对，是不在点子上… 详细一点，举个例子？ 苍老师: 不清楚具体的，只是这样想的话可能是数据被盗取了之类的吧 addpass: 不是不是, 这个扯太远了。http://blog.sslocal.cn/404/ 这是我的404 ，返回码是200. 苍老师: 这是？404页面还能有其他东西的？ addpass: 为了优化用户体验，如果请求页面404，会统一返回 error.html。举个例子: http://www.addpass.me/fuck , 用户要 /fuck. 但你知道我这是正经网站，没有这个页面。此时服务器应该返回404状态码。不过 既然是正经网站，那么也应该是注重用户体验。考虑到别人访问网页，就得到一串报错的信息太 不友好，所以凡是404的请求，都返回一个error页面，善意提醒他走错了片场。 因为有这个 HTML 返回了，因此状态码就 200 了。 苍老师: 一个表面意思404， 我以为请求这边会验证你接受到的网页 addpass: 嗯，对！看这个就是不加处理，直接返回404了。这个就是优化后的404 苍老师: 系统真的是收到 HTML 就200吗 ？ addpass: 正常情况应该是那样.但看知乎返回了 HTML 文件, 但状态是404. 你觉得可能是怎么实现的？ 苍老师: 他下面有个404.js , 会不会是这个导致？ addpass: 看一下代码，应该不是这个js的原因。这个 js 看起来像是搜集数据用的,track 非正常请求。返回了 HTML, 而状态码又是 404 。我猜应该是在后端做了处理。404的请求，返回 error.html ，这时候再处理一下，修改状态码为404，这样就方便 HTTP 监控了？改天跟老大求证一下。 addpass: 你看百度的 not found , 感觉就不如知乎的严谨了, 这一点上，知乎和谷歌看齐了. /斜眼笑 Your user agent does not support the HTML5 Video element. Your user agent does not support the HTML5 Video element. 苍老师: 休息了 addpass: 好，走！]]></content>
+      <categories>
+        <category>Network</category>
+      </categories>
+      <tags>
+        <tag>HTTP</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Key Concurrency Terms]]></title>
+    <url>%2F2018%2F01%2F22%2FKey-Concurrency-Terms%2F</url>
+    <content type="text"><![CDATA[CRITICAL SECTION, RACE CONDITION, INDETERMINATE, MUTUAL EXCLUSIONThese four terms are so central to concurrent code that we thought it worth while to call them out explicitly. CRITICAL SECTIONA critical section is a piece of code that accesses a shared resource, usually a variable or data structure. RACE CONDITIONA race condition arises if multiple threads of execution enter the critical section at roughly the same time; both attempt to update the shared data structure, leading to a surprising (and perhaps un- desirable) outcome. INDETERMINATEAn indeterminate program consists of one or more race conditions; the output of the program varies from run to run, depending on which threads ran when. The outcome is thus not deterministic, something we usually expect from computer systems. MUTUAL EXCLUSIONTo avoid these problems, threads should use some kind of mutual exclusion primitives; doing so guarantees that only a single thread ever enters a critical section, thus avoiding races, and resulting in deterministic program outputs.]]></content>
+      <categories>
+        <category>每日一句</category>
+      </categories>
+      <tags>
+        <tag>Operating System three easy pieces</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Common Memrory Errors]]></title>
+    <url>%2F2018%2F01%2F11%2FCommon-Memrory-Errors%2F</url>
+    <content type="text"><![CDATA[In Unix/C programs, understanding how to allocate and manage memory is critical in building robust and reliable software. What mistakes should be avoided? Forgetting To Allocate Memory123char *src = "hello";char *dst; // oops! unallocatedstrcpy(dst, src); //segfault and die Not Allocating Enough Memory123char *src = "hello";char *dst = (char*) malloc(strlen(src)); // too small, should be strlen(src) + 1.strcpy(dst, src); Forgetting to Initialize Allocated MemoryForgetting to Free Memory _Also known as memory leak_ Freeing Memory Before You Are Done With ItFreeing Memory RepeatedlyCalling Free() IncorrectlyMeans that free() expects you only to pass to it one of the pointers you received from malloc() earlier. However you passed in some other value, bad things can(and do) happen. Because of frequent errors with memory, a whole ecosphere of tools have developed to help find such problems in your code. Check out both purify and valgrind; both are excellent at helping you locate the source of your memory-related problems. For a cool modern paper on how to detect and correct many of these problems automatically, see Exterminator: Automatically Correcting Memory Errors with High Probability]]></content>
+      <categories>
+        <category>每日一句</category>
+      </categories>
+      <tags>
+        <tag>Operating System three easy pieces</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Confusing word -Transparency]]></title>
+    <url>%2F2018%2F01%2F10%2FConfusing-word-Transparency%2F</url>
+    <content type="text"><![CDATA[The major goal of a virtual memory (VM) system is transparency. This usage of transparency is sometimes confusing; some students think that “being transparent” means keeping everything out in the open, i.e., what government should be like. Here, it means the opposite: that the illusion provided by the OS should not be visible to ap- plications. Thus, in common usage, a transparent system is one that is hard to notice, not one that responds to requests as stipulated by the Freedom of Information Act.]]></content>
+      <categories>
+        <category>每日一句</category>
+      </categories>
+      <tags>
+        <tag>Operating System three easy pieces</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Why coming Abstraction of Address space]]></title>
+    <url>%2F2018%2F01%2F09%2FSharing-Memory-Abstraction-of-Address-space%2F</url>
+    <content type="text"><![CDATA[At the era of multiprogramming, to make process-shifting more efficient, we’d rather do is leave processes in memory while switching them. Thus making each part of memory being protected from others invalid touch has became essential. - Abstraction of address space.]]></content>
+      <categories>
+        <category>每日一句</category>
+      </categories>
+      <tags>
+        <tag>Operating System three easy pieces</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Thread and Process]]></title>
+    <url>%2F2018%2F01%2F08%2FThread%20and%20Process%2F</url>
+    <content type="text"><![CDATA[Think of this is that each thread is very much like a separate process, except for one difference: they share the same address space and thus can access the same data.]]></content>
+      <categories>
+        <category>每日一句</category>
+      </categories>
+      <tags>
+        <tag>Operating System three easy pieces</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Python logging 的多文件输出]]></title>
+    <url>%2F2017%2F12%2F17%2FPython%20logging%E7%9A%84%E5%A4%9A%E6%96%87%E4%BB%B6%E8%BE%93%E5%87%BA%20%2F</url>
+    <content type="text"><![CDATA[在写爬虫的过程中, 由于没用框架, 随处可见用作输出记录的print()函数把自己着实恶心了一把…考虑到之后还有一些功能函数需要完善,因此将 logging 模块引进.第一次写成了这个样子： 遇到的问题： 每条日志记录怎么打印了两次？？？ 原因： 解决方法： baseConfig 是什么操作？ 遇到的问题： 原因： 解决方法： 待完善]]></content>
+      <categories>
+        <category>Python</category>
+      </categories>
+      <tags>
+        <tag>Python</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[Database Transactional Management]]></title>
+    <url>%2F2017%2F11%2F23%2FDatabase-Transaction-Management%2F</url>
+    <content type="text"><![CDATA[事务的特性 ACID A: Atomicity(原子性): 一个事务包含多个操作，这些操作要么全部执行成功，有一个执行失败就都失败。多个操作可以看做一个操作。 C: Consistency(一致性) : 就是数据保持一致，对于分布式系统来说，可以理解为多个节点的数据是一致的。从一个状态转变到另外一个状态。 I: Isolation(隔离性): 事务并发执行时，防止多个事务交叉执行对数据一致性造成影响。 D: Durability(持久性): 事务提交后会被持久化到永久存储。 先说Consistency:一致性分多种层次分别有：强一致性、弱一致性、最终一致性、单调一致性、会话一致性。 强一致性: 可以理解为在任意时刻，所有节点的数据都是一样的。 弱一致性: 弱一致性有多种实现，分布式系统中使用广泛实现的是「最终一致性」，不保证任一时刻每个节点的同一份数据一样。但随着时间迁移，不同节点数据总是向趋同的方向变化。DNS 服务器是个很好的「最终一致性」例子，当一个节点更新 DNS 记录后，其他节点不会立即全部更新。因为 DNS 多级缓存的存在，需要等待缓存服务器过期之后向源服务器请求更新记录才会更新。 单调一致性：一个进程已经读到的值，那么后续不会再读到更早的记录。 会话一致性：保证客户端和服务器交互的会话过程中，读操作可以读到更新操作之后的值。一致性实现的原理简析： 一致性是通过「预写日志」的方式来实现的。具体原理是：数据库在执行事务时，并不会立即执行这些操作，而是将这些操作写入「预写日志」，预写日志是保存在磁盘上的。预写日志写入完成之后数据库程序将执行预写日至中的内容，更新数据库中的数据文件。正常情况下，完成 结束事务操作之后会删除预写的日志，并告知程序执行成功。(有些数据库在删除日志前会将再次日志写进「归档日志」中，以便可以通过归档日志恢复整个库）。但在某些情况也可能发生意外，如突然断电导致数据库程序执行中断。数据库重启后，可能发生两种情况： 数据库重启后，查看「预写日志」发现一个事务，并且该事务操作最后一条记录是「结束事务」。由此可以推断，该事务可能已经执行成功但还未来得及删除日志记录，或者事务还没执行或者没执行完。但情况无论如何，数据库都将进行「前滚」操作。将「预写日志」里的操作再执行一遍。因此，事务在执行到哪一步中断的其实我们可以不用关心，事实上它也不重要。因为前滚操作会将「预写日志」中的整个内容再执行一次，以保证一致性。对于无论执行多少次都不会影响最终结果的这种特性成为「幂等性」 数据库重启后，查看「预写日志」发现一个事务，并且该事务最后一条记录不是「结束日志」，此时可以知道事务一定没有正确执行。由于没有「结束日志」记录，因此无法判断之后是否还有其他操作，因此不能执行「前滚」操作，只能执行「回滚」操作进行恢复，将以在日志中的操作反过来恢复。(数据库在写「预写日志」时，不仅记录新值同时也会记录原值） 再谈 isolation :事务隔离性一般有四个不同的级别 Read uncommited: 允许读取其他事务更改过但还未提交(事务)的数据，隔离等级最低。如事务 A 对数据 C 进行了修改(但未提交事务)。此时事务 B 读取了修改后的数据 C，而事务 A 因为某种异常进行了回滚，那么事务 B 读到的数据 C(脏数据) 就是错误的数据。 Read commited: 这个级别的隔离可以避免脏读，即事务不能读取到未提交的数据。比如事务 A 修改了数据 C 但未提交事务，此时事务 B select 数据 C 不会 select 到未提交的 C ，只能 select 到修改之前的数据 C。这个级别的隔离，避免了脏读 但仍然不能 「Repeatable read」.如：事务 A select 了数据 C ，此时事务 B 对数据 C 进行修改并提交了事务。这时事务 A 还没提交，如果再次执行select 数据 C ，会惊讶的发现…两次数据不一样。即，这个级别的隔离是「unrepeatable read」 不可重复读的。 Repeatable read : 可重复读取，这个级别的隔离可以保证同一个事务每次 select 的数据都是一致的。(不同的数据库引擎这个级别的隔离实现原理可能不同。一般认为通过加锁实现，如 事务A 在读取数据 C 时，不允许其他事务对数据 C 进行修改。但 InnoDB 引擎采用的 Read view 原理，第一次 select 时会生成一个 snapshot，之后的 select都从这个 snapshot 上读取，因此能保证多次 select 的结果相同，且没有加锁的操作。避免了出现死锁的情况，提高了并发的能力。) 这个级别的隔离无法避免幻读，比如在事务 A 想将表中所有人月薪不足5000的记录，都改成5000。当事务 A 执行完所有操作，但还未提交事务。此时事务 B 又插入(或删除)一条月薪不足5000的数据。然后提交事务 A B。此时事务 A 发生幻觉，好像事务没有执行成功一样。这是因为「Repeatable read」锁定的是已经读取的记录，而不是锁定整张表。 Serialization: 事务串行化执行，隔离级别最高，牺牲了系统并发性。 参考文章: 数据库中隔离性的四种级别详解与例子InnoDB 可重复读原理数据库一致性原理浅析什么是数据库的一致性？一致性弱意味着什么？]]></content>
+      <categories>
+        <category>Database</category>
+      </categories>
+      <tags>
+        <tag>事务管理</tag>
+        <tag>Transactional management</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title><![CDATA[荷兰牧场与父老乡亲]]></title>
+    <url>%2F2015%2F11%2F08%2F%E8%8D%B7%E5%85%B0%E7%89%A7%E5%9C%BA%E4%B8%8E%E7%88%B6%E8%80%81%E4%B9%A1%E4%BA%B2%2F</url>
+    <content type="text"><![CDATA[王小波 我到荷兰去旅游，看到运河边上有个风车，风车下面有一片牧场，就站下来看，然后被震惊了。这片牧场在一片低洼地里，远低于运河的水面，茵茵的绿草上有些奶牛在吃草。乍看起来不过是一片乡村景象，细看起来就会发现些别的：那些草地的中央隆起，四周环以浅沟；整个地面像瓦楞铁一样略有起伏，下凹的地方和沟渠相接，浅沟通向深沟，深沟又通向渠道。所有的渠道都通到风车那里。这样一来，哪怕天降大雨，牧场上也不会有积水。水都流到沟渠里，等着风车把它抽到运河里去。如果没有这样精巧的排水系统，这地方就不会有牧场，只会有沼泽地。站在运河边上，极目所见，到处是这样井然有序的牧场。这些地当然不是天生这样，它是人悉心营造的结果。假如这种田园出于现代工程技术人员之手，那倒也罢了。实际上，这些运河、风车、牧场，都是十七世纪时荷兰人的作品。我从十七岁就下乡插队，南方北方都插过，从来没见过这样的土地。 我在山东老家插过两年队，什么活都干过。七四年的春夏之交，天还没有亮，我就被一阵哇哇乱叫的有线广播声吵起来了。这种哇哇的声音提醒我们，现在已经是电子时代。然后我紧紧裤腰带，推起独轮车，给地里送粪。独轮车很不容易叫我想起现在是电子时代。俗话说得好，种地不上粪，等于瞎胡混；我们老家的人就认这个理。独轮车的好处在于它可以在各种糟糕的路上走，绕过各种坑和石头；坏处在于它极难操纵，很容易连人带车一起翻掉。 我们老家的人在提高推车技巧方面不遗余力，达到了杂技的水平。举例来说，有人可以把车推过门槛，有人可以把它推上台阶。但不管技巧有多高，还是免不了栽跟头，而且总造成鼻青脸肿的后果。现在我想，与其在车技上下苦功，还不如把路修修–我在欧洲游玩时，发现那边的乡间道路极为美好–但这件事就是没人干。不要说田间的路，就是村里的路也很糟，说不清是路还是坑。 我们老家那些地都在山上。下乡时我带了几双布鞋，全是送粪时穿坏的。整双鞋像新的一样，只是后跟豁开了。我的脚脖子经常抽筋，现在做梦梦到推粪上山，还是要抽筋。而且那些粪也不过是美其名为粪，实则是些垫猪圈的土，学大寨时要凑上报数字，常常刚垫上就挖出来，猪还来不及在上面排泄呢„„我去起圈时，猪老诧异地看着我。假如它会说话，肯定要问问我：抽什么疯呢？有时我也觉得不好意思，就揍它。’被猪看成笨蛋，这是不能忍受的。 坦白地说，我自己绝不可能把一车粪推上山–坡道太陡，空手走都有点喘。实际上山边上有人在接应：小车推到坡道上，就有人用绳子套住，在前面拉，和两人之力，才能把车弄上山去。这省了我的劲儿，但从另一个角度来说就更笨了。这道理是这样的：这一车粪有一百公斤，我和小车加起来，也快有一百公斤了，为了送一百公斤的粪，饶上我这一百公斤已经很笨，现在又来了一个人，这就不止是一百公斤。刨去做无效功不算，有效功不过是送上去一些土，其中肥料的成分本属虚无缥缈——好在这些蠢事猪是看不到的；假如看到的话，不知它会怎么想：土里只要含有微量它老人家的粪尿，人就要不惜劳力送上高山–它会因此变成自大狂，甚至提出应该谁吃谁的问题—— 从任何意义上说，送粪这种工作决不比从低洼地里提水更有价值。这种活计本该交给风能去干，犯不着动用宝贵的人体生物能。我总以为，假如我老家住了些十七世纪的荷兰人，肯定遍山都是缆车、索道–他们就是那样的人：工程师、经济学家、能工巧匠。至于我老家的乡亲，全是些勤劳朴实、缺少心计的人。前一种人的生活比较舒服，这是不容争辩的。 现在可以说说我是种什么人。在老家时，我和乡亲们相比，显得更加勤劳朴实、更加少心计。当年我想的是：我得装出很能吃苦的样子，让村里的贫下中农觉得我是个好人，推荐我去上大学，跳出这个火坑——顺便说一句，我虽有这种卑鄙的想法，但没有得逞。大学还是我自己考上的。既然他们没有推荐我，我就可以说几句坦白的话，不算占了便宜又卖乖。村里的那些活，弄得人一会儿腰疼，一会儿腿疼，尤其是拔麦子，拔得手疼不已，简直和上刑没什么两样–十指连心嘛，干吗要用它们干这种受罪的事呢？当年我假装很受用，说什么身体在受罪，思想却变好了，全是昧心话。说良心话就是：身体在受罪，思想也更坏了，变得更阴险，更奸诈——当年我在老家插队时，共有两种选择：一种朴实的想法是在村里苦挨下去，将来成为一位可敬的父老乡亲；一种狡猾的想法就是从村里混出去，自己不当父老乡亲，反过来歌颂父老乡亲。这种歌颂虽然动听，但多少有点虚伪——站在荷兰牧场面前，我发现还有第三种选择。对于个人来说，这种选择不存在，但对于一个民族来说，它不仅存在，而且还是正途。]]></content>
+      <categories>
+        <category>live</category>
+      </categories>
+      <tags>
+        <tag>王小波</tag>
+      </tags>
+  </entry>
+</search>
