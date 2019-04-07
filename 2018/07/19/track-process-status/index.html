@@ -83,7 +83,7 @@
 <meta name="keywords" content="Linux,strace,top">
 <meta property="og:type" content="article">
 <meta property="og:title" content="排查线上程序出现了CPU或内存高占用的原因">
-<meta property="og:url" content="http://yoursite.com/2018/07/19/track-process-status/index.html">
+<meta property="og:url" content="https://zeng-tong.github.io/2018/07/19/track-process-status/index.html">
 <meta property="og:site_name" content="杂记">
 <meta property="og:description" content="Linux 下可以通过 top 命令查看系统的健康状态，按下「1」来打开 CPU 列表，然后「shift + p」 以CPU 排序。查到 cpu 占用高的进程的 pid，然后看 CPU 主要消耗在用户态(us)还是内核态(sy)。用户态的函数跟踪用 ltrace , 内核态的函数跟踪用 strace 命令。以内核态为例：12sudo strace -p [pid] # 跟踪进程号为 pid 的进程">
 <meta property="og:locale" content="zh-Hans">
@@ -120,7 +120,7 @@
 
 
 
-  <link rel="canonical" href="http://yoursite.com/2018/07/19/track-process-status/">
+  <link rel="canonical" href="https://zeng-tong.github.io/2018/07/19/track-process-status/">
 
 
 
@@ -187,16 +187,6 @@
               <i class="menu-item-icon fa fa-fw fa-home"></i> <br>
             
             首页
-          </a>
-        </li>
-      
-        
-        <li class="menu-item menu-item-about">
-          <a href="/about/" rel="section">
-            
-              <i class="menu-item-icon fa fa-fw fa-user"></i> <br>
-            
-            关于
           </a>
         </li>
       
@@ -295,12 +285,12 @@
   
   
   <div class="post-block">
-    <link itemprop="mainEntityOfPage" href="http://yoursite.com/2018/07/19/track-process-status/">
+    <link itemprop="mainEntityOfPage" href="https://zeng-tong.github.io/2018/07/19/track-process-status/">
 
     <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
       <meta itemprop="name" content="zengtong">
       <meta itemprop="description" content>
-      <meta itemprop="image" content="/images/avatar.gif">
+      <meta itemprop="image" content="https://upload-images.jianshu.io/upload_images/3166731-fa7f99b74ddd0e74.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240">
     </span>
 
     <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
@@ -512,6 +502,8 @@
         <div class="site-overview">
           <div class="site-author motion-element" itemprop="author" itemscope itemtype="http://schema.org/Person">
             
+              <img class="site-author-image" itemprop="image" src="https://upload-images.jianshu.io/upload_images/3166731-fa7f99b74ddd0e74.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240" alt="zengtong">
+            
               <p class="site-author-name" itemprop="name">zengtong</p>
               <p class="site-description motion-element" itemprop="description">凡是不可持续的，都不可羡慕。</p>
           </div>
@@ -533,10 +525,10 @@
               
               
               <div class="site-state-item site-state-categories">
-                
+                <a href="/categories/index.html">
                   <span class="site-state-item-count">12</span>
                   <span class="site-state-item-name">分类</span>
-                
+                </a>
               </div>
             
 
@@ -544,10 +536,10 @@
               
               
               <div class="site-state-item site-state-tags">
-                
+                <a href="/tags/index.html">
                   <span class="site-state-item-count">31</span>
                   <span class="site-state-item-name">标签</span>
-                
+                </a>
               </div>
             
 
@@ -577,6 +569,20 @@
           
 
           
+          
+            <div class="links-of-blogroll motion-element links-of-blogroll-inline">
+              <div class="links-of-blogroll-title">
+                <i class="fa  fa-fw fa-link"></i>
+                Links
+              </div>
+              <ul class="links-of-blogroll-list">
+                
+                  <li class="links-of-blogroll-item">
+                    <a href="https://blog.csdn.net/m0_37947204" title="linxuejiao" target="_blank">linxuejiao</a>
+                  </li>
+                
+              </ul>
+            </div>
           
 
           

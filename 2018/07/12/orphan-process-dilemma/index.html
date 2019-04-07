@@ -83,7 +83,7 @@
 <meta name="keywords" content="Linux">
 <meta property="og:type" content="article">
 <meta property="og:title" content="孤儿进程造成的进退维谷">
-<meta property="og:url" content="http://yoursite.com/2018/07/12/orphan-process-dilemma/index.html">
+<meta property="og:url" content="https://zeng-tong.github.io/2018/07/12/orphan-process-dilemma/index.html">
 <meta property="og:site_name" content="杂记">
 <meta property="og:description" content="如果父进程在子进程之前退出，必须有机制来保证子进程能找到一个新的父亲，否则这些成为孤儿的进程在退出时将永远处于僵死状态，白白耗费内存。对于这个问题解决方法是给子进程在当前线程内找一个线程作为父亲，如果不行，就让init做它们的父亲。在do_exit() 中会调用exit_notify()，该函数会调用forget_original_parent()，而后调用 find_new_reaper()来执">
 <meta property="og:locale" content="zh-Hans">
@@ -120,7 +120,7 @@
 
 
 
-  <link rel="canonical" href="http://yoursite.com/2018/07/12/orphan-process-dilemma/">
+  <link rel="canonical" href="https://zeng-tong.github.io/2018/07/12/orphan-process-dilemma/">
 
 
 
@@ -187,16 +187,6 @@
               <i class="menu-item-icon fa fa-fw fa-home"></i> <br>
             
             首页
-          </a>
-        </li>
-      
-        
-        <li class="menu-item menu-item-about">
-          <a href="/about/" rel="section">
-            
-              <i class="menu-item-icon fa fa-fw fa-user"></i> <br>
-            
-            关于
           </a>
         </li>
       
@@ -295,12 +285,12 @@
   
   
   <div class="post-block">
-    <link itemprop="mainEntityOfPage" href="http://yoursite.com/2018/07/12/orphan-process-dilemma/">
+    <link itemprop="mainEntityOfPage" href="https://zeng-tong.github.io/2018/07/12/orphan-process-dilemma/">
 
     <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
       <meta itemprop="name" content="zengtong">
       <meta itemprop="description" content>
-      <meta itemprop="image" content="/images/avatar.gif">
+      <meta itemprop="image" content="https://upload-images.jianshu.io/upload_images/3166731-fa7f99b74ddd0e74.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240">
     </span>
 
     <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
@@ -511,6 +501,8 @@
         <div class="site-overview">
           <div class="site-author motion-element" itemprop="author" itemscope itemtype="http://schema.org/Person">
             
+              <img class="site-author-image" itemprop="image" src="https://upload-images.jianshu.io/upload_images/3166731-fa7f99b74ddd0e74.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240" alt="zengtong">
+            
               <p class="site-author-name" itemprop="name">zengtong</p>
               <p class="site-description motion-element" itemprop="description">凡是不可持续的，都不可羡慕。</p>
           </div>
@@ -532,10 +524,10 @@
               
               
               <div class="site-state-item site-state-categories">
-                
+                <a href="/categories/index.html">
                   <span class="site-state-item-count">12</span>
                   <span class="site-state-item-name">分类</span>
-                
+                </a>
               </div>
             
 
@@ -543,10 +535,10 @@
               
               
               <div class="site-state-item site-state-tags">
-                
+                <a href="/tags/index.html">
                   <span class="site-state-item-count">31</span>
                   <span class="site-state-item-name">标签</span>
-                
+                </a>
               </div>
             
 
@@ -576,6 +568,20 @@
           
 
           
+          
+            <div class="links-of-blogroll motion-element links-of-blogroll-inline">
+              <div class="links-of-blogroll-title">
+                <i class="fa  fa-fw fa-link"></i>
+                Links
+              </div>
+              <ul class="links-of-blogroll-list">
+                
+                  <li class="links-of-blogroll-item">
+                    <a href="https://blog.csdn.net/m0_37947204" title="linxuejiao" target="_blank">linxuejiao</a>
+                  </li>
+                
+              </ul>
+            </div>
           
 
           
