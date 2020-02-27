@@ -84,7 +84,7 @@
 <meta property="og:type" content="article">
 <meta property="og:title" content="孤儿进程造成的进退维谷">
 <meta property="og:url" content="https://zeng-tong.github.io/2018/07/12/orphan-process-dilemma/index.html">
-<meta property="og:site_name" content="杂记">
+<meta property="og:site_name" content="枫桥夜渔">
 <meta property="og:description" content="如果父进程在子进程之前退出，必须有机制来保证子进程能找到一个新的父亲，否则这些成为孤儿的进程在退出时将永远处于僵死状态，白白耗费内存。对于这个问题解决方法是给子进程在当前线程内找一个线程作为父亲，如果不行，就让init做它们的父亲。在do_exit() 中会调用exit_notify()，该函数会调用forget_original_parent()，而后调用 find_new_reaper()来执">
 <meta property="og:locale" content="zh-Hans">
 <meta property="og:updated_time" content="2018-08-08T11:07:01.000Z">
@@ -126,7 +126,7 @@
 
 
 
-  <title>孤儿进程造成的进退维谷 | 杂记</title>
+  <title>孤儿进程造成的进退维谷 | 枫桥夜渔</title>
   
 
 
@@ -156,12 +156,12 @@
     <div class="custom-logo-site-title">
       <a href="/" class="brand" rel="start">
         <span class="logo-line-before"><i></i></span>
-        <span class="site-title">杂记</span>
+        <span class="site-title">枫桥夜渔</span>
         <span class="logo-line-after"><i></i></span>
       </a>
     </div>
       
-        <p class="site-subtitle">work life balance.</p>
+        <p class="site-subtitle">敢于面对傻X的自己，才能进步。</p>
       
   </div>
 
@@ -294,7 +294,7 @@
     </span>
 
     <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
-      <meta itemprop="name" content="杂记">
+      <meta itemprop="name" content="枫桥夜渔">
     </span>
 
     
@@ -615,7 +615,7 @@
 
     <footer id="footer" class="footer">
       <div class="footer-inner">
-        <div class="copyright">&copy; <span itemprop="copyrightYear">2019</span>
+        <div class="copyright">&copy; <span itemprop="copyrightYear">2020</span>
   <span class="with-love">
     <i class="fa fa-user"></i>
   </span>
